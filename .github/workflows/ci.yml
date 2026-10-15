@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Lint, typecheck, unit tests, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  integration:
+    name: Integration tests (Postgres 17 + Redis 7)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: lre
+          POSTGRES_PASSWORD: lre
+          POSTGRES_DB: lre_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U lre -d lre_test"
+          --health-interval 2s --health-timeout 3s --health-retries 30
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s --health-timeout 3s --health-retries 30
+    env:
+      DATABASE_URL: postgres://lre:lre@localhost:5432/lre_test
+      REDIS_URL: redis://localhost:6379/0
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run test:integration
+
+  image:
+    name: Docker image builds and migrates
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Compose smoke test
+        run: |
+          docker compose up -d --build ingest
+          curl -fsS --retry 30 --retry-all-errors --retry-delay 2 http://127.0.0.1:3000/readyz
+          curl -fsS -X POST http://127.0.0.1:3000/v1/leads \
+            -H 'content-type: application/json' -H 'idempotency-key: ci-smoke-0001' \
+            -d '{"product":"auto_insurance","state":"CA","zip":"94105","creditBand":"fair","contact":{"firstName":"Ci","lastName":"Smoke","email":"ci@example.com","phone":"+14155550123"},"consent":{"tcpa":true,"capturedAt":"2026-10-15T10:00:00Z"},"source":{"publisherId":"ci"}}' \
+            | tee /dev/stderr | grep -q '"status":"received"'
+          test "$(docker compose exec -T redis redis-cli XLEN leads.received)" = "1"
+      - name: Logs on failure
+        if: failure()
+        run: docker compose logs
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
