@@ -77,7 +77,7 @@ For each lead the router:
 | Publisher retries don't duplicate leads | `Idempotency-Key` header is unique in Postgres. A replay returns the original lead id; the same key with a different payload is a `409`. |
 | No lead is lost between Postgres and Redis | The `leads` table doubles as the outbox: a lead is `published_at IS NULL` until `XADD` succeeds, and a sweeper republishes stragglers. |
 | Delivery to the router | At-least-once: messages are acked only after the decision is committed; unacked messages are reclaimed. |
-| Each lead sold at most once | Idempotent consumer: lead claim with a lease + a partial unique index on `routing_decisions(lead_id) WHERE outcome = 'sold'`. At-least-once delivery + idempotent consumer = **effectively-once** from the business's point of view. |
+| Each lead sold at most once | Idempotent consumer: lead claim with a lease and fencing token, plus a unique constraint on `routing_decisions(lead_id)` (one final decision per lead). At-least-once delivery + idempotent consumer = **effectively-once** from the business's point of view. |
 | Caps never exceeded | Cap counters are reserved with a single-statement conditional upsert in Postgres, so concurrent workers serialize on the counter row. A crash between reserve and release can *under*-fill a cap, never overfill it. |
 | Poison messages don't block the stream | Retries with exponential backoff (based on idle time and delivery count), then the message moves to a dead-letter stream and the lead is marked `failed`. |
 
@@ -98,11 +98,57 @@ Design decisions and their trade-offs are in [`docs/adr/`](docs/adr):
 | Milestone | Scope | Status |
 |---|---|---|
 | M0 | README, ADRs, licence | Done |
-| M1 | npm-workspaces monorepo (TS strict, ESLint, Vitest), ingest service with validation and idempotency, Postgres migrations, docker-compose, CI with integration tests against Postgres and Redis | Planned |
+| M1 | npm-workspaces monorepo (TS strict, ESLint, Vitest), ingest service with validation and idempotency, Postgres migrations, docker-compose, CI with integration tests against Postgres and Redis | Done |
 | M2 | Router worker: eligibility filters, atomic caps, tier + weighted selection, consumer group with ack / retry / DLQ, idempotent processing, concurrency tests | Planned |
 | M3 | Ping-post over HTTP with timeouts and fallback (mock buyer server), Prometheus metrics, k6 load test | Planned |
 | M4 | Kubernetes manifests (kustomize), HPA on stream lag, load test results in this README | Planned |
 | M5 | Cap reconciliation job, buyer admin API, OpenTelemetry tracing | Planned |
+
+## Running locally
+
+Requires Docker (and Node 22+ for development).
+
+```bash
+docker compose up --build -d          # postgres, redis, migrations, ingest on :3000
+curl -i -X POST http://localhost:3000/v1/leads \
+  -H 'content-type: application/json' -H 'idempotency-key: demo-0001' \
+  -d '{"product":"personal_loan","state":"TX","zip":"73301","amountCents":1500000,"creditBand":"good",
+       "contact":{"firstName":"Ada","lastName":"Lovelace","email":"ada@example.com","phone":"+15555550123"},
+       "consent":{"tcpa":true,"capturedAt":"2026-10-15T09:30:00Z"},"source":{"publisherId":"pub-1"}}'
+# 202 {"leadId":"…","status":"received"}; repeat it and you get the same leadId with Idempotent-Replayed: true
+docker compose exec redis redis-cli XRANGE leads.received - +
+docker compose down -v
+```
+
+### API (ingest)
+
+| Method | Path | Notes |
+|---|---|---|
+| `POST` | `/v1/leads` | Requires `Idempotency-Key` (8-255 chars). `202` with `leadId`; `400` with field-level issues; `409` if the key was used with a different payload; `413` over 16 KiB. |
+| `GET` | `/v1/leads/:id` | Current lead status. |
+| `GET` | `/healthz`, `/readyz` | Liveness; readiness checks Postgres and Redis. |
+
+## Development
+
+```
+packages/shared     lead schema (zod), stream helpers, config, logger, pg/redis clients, migration runner
+services/ingest     Fastify HTTP edge + outbox sweeper
+db/migrations       plain SQL, applied in order under an advisory lock
+scripts/build.mjs   esbuild: one bundle per service in dist/, so the runtime image has no node_modules
+```
+
+```bash
+npm ci
+npm run check                 # lint (typescript-eslint strict, type-aware) + typecheck + unit tests
+npm run build                 # dist/ingest.js, dist/migrate.js
+
+# Integration tests need a real Postgres and Redis; they drop and recreate the public schema.
+docker compose up -d postgres redis
+DATABASE_URL=postgres://lre:lre@localhost:5432/lre REDIS_URL=redis://localhost:6379/1 npm run test:integration
+```
+
+Unit tests use in-memory fakes behind the same interfaces as the Postgres and Redis adapters; integration
+tests run the real adapters (CI uses Postgres 17 and Redis 7 service containers).
 
 ## Load test results
 

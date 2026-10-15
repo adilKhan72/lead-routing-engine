@@ -25,11 +25,12 @@ lead is stored once and sold at most once, and that no lead is silently lost.
 
 **In the router (idempotent consumer):**
 
-- Claim: `UPDATE leads SET status = 'routing', lease_until = now() + lease WHERE id = $1 AND
-  (status = 'received' OR (status = 'routing' AND lease_until < now()))`. Zero rows means another
-  worker owns it or it is already final: ack and move on.
-- The final decision is written in the same transaction that moves the lead to `sold` / `unsold`,
-  guarded by a partial unique index `routing_decisions(lead_id) WHERE outcome = 'sold'`.
+- Claim: `UPDATE leads SET status = 'routing', claim_token = $new, lease_until = now() + lease
+  WHERE id = $1 AND (status = 'received' OR (status = 'routing' AND lease_until < now()))`. Zero rows
+  means another worker owns it or it is already final: ack and move on.
+- The final decision is written in the same transaction that moves the lead to `sold` / `unsold`.
+  That update is fenced on `claim_token`, so a worker whose lease expired and was taken over cannot
+  commit a stale decision. `routing_decisions.lead_id` is unique as a last line of defence.
 - The stream message is acked only after that transaction commits.
 
 ## Consequences

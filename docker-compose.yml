@@ -1,0 +1,62 @@
+# Local stack. `docker compose up --build`, then POST leads to http://localhost:3000/v1/leads.
+name: lead-routing-engine
+
+x-app-env: &app-env
+  DATABASE_URL: postgres://lre:lre@postgres:5432/lre
+  REDIS_URL: redis://redis:6379/0
+  LOG_LEVEL: info
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: lre
+      POSTGRES_PASSWORD: lre # local development only
+      POSTGRES_DB: lre
+    command: ["postgres", "-c", "shared_buffers=64MB", "-c", "max_connections=100"]
+    ports: ["127.0.0.1:5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lre -d lre"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    volumes: [pgdata:/var/lib/postgresql/data]
+
+  redis:
+    image: redis:7-alpine
+    # AOF so stream entries survive a restart; Postgres remains the source of truth (ADR-0001).
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    ports: ["127.0.0.1:6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    volumes: [redisdata:/data]
+
+  migrate:
+    build: .
+    command: ["dist/migrate.js"]
+    environment: *app-env
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  ingest:
+    build: .
+    command: ["dist/ingest.js"]
+    environment:
+      <<: *app-env
+      PORT: "3000"
+    ports: ["127.0.0.1:3000:3000"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:
+  redisdata:
