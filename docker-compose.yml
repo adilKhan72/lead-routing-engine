@@ -62,11 +62,20 @@ services:
     command: ["dist/router.js"]
     environment:
       <<: *app-env
+      ROUTER_GATEWAY: http # real ping-post against mock-buyer; `accept-all` to take buyers out of the picture
     deploy:
       replicas: 2
     depends_on:
       migrate: { condition: service_completed_successfully }
       redis: { condition: service_healthy }
+      mock-buyer: { condition: service_started }
+
+  # Simulated buyer endpoints with fast / picky / flaky / slow / never profiles (see db/seed/demo-buyers.sql).
+  mock-buyer:
+    build: .
+    command: ["dist/mock-buyer.js"]
+    environment:
+      PORT: "4000"
 
 volumes:
   pgdata:

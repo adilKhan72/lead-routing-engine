@@ -1,5 +1,5 @@
 import type { Buyer } from './buyer.ts';
-import type { RoutableLead } from './eligibility.ts';
+import type { ClaimedLead } from './eligibility.ts';
 
 export type DeliveryResult =
   | { result: 'accepted' }
@@ -10,10 +10,10 @@ export type DeliveryResult =
  * failing or rejecting buyer is a normal outcome that sends the router to the next candidate (ADR-0004).
  */
 export interface BuyerGateway {
-  deliver(buyer: Buyer, lead: RoutableLead, budgetMs: number): Promise<DeliveryResult>;
+  deliver(buyer: Buyer, lead: ClaimedLead, budgetMs: number): Promise<DeliveryResult>;
 }
 
-/** Stand-in until the HTTP ping-post gateway lands (M3): every buyer accepts instantly. */
+/** Every buyer accepts instantly. For tests and for isolating the engine from buyer latency in load tests. */
 export class AcceptAllGateway implements BuyerGateway {
   deliver(): Promise<DeliveryResult> {
     return Promise.resolve({ result: 'accepted' });

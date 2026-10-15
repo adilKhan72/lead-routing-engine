@@ -112,3 +112,20 @@ describe('probes', () => {
     expect((await app.inject({ method: 'GET', url: '/readyz' })).statusCode).toBe(503);
   });
 });
+
+describe('metrics', () => {
+  it('exposes request latency and accepted-lead counters', async () => {
+    const { Registry } = await import('@lre/shared');
+    const registry = new Registry();
+    const app = buildApp({ repo: new InMemoryLeadRepository(), publisher: new FakePublisher(), log: silent }, { registry });
+    const post = () =>
+      app.inject({ method: 'POST', url: '/v1/leads', payload: makeLead(), headers: { 'idempotency-key': 'metrics-0001' } });
+    await post();
+    await post();
+
+    const text = (await app.inject({ method: 'GET', url: '/metrics' })).body;
+    expect(text).toContain('lre_leads_accepted_total{replayed="false"} 1');
+    expect(text).toContain('lre_leads_accepted_total{replayed="true"} 1');
+    expect(text).toMatch(/lre_http_request_duration_seconds_count\{method="POST",route="\/v1\/leads",status_code="202"\} 2/);
+  });
+});

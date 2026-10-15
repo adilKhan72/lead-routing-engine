@@ -5,3 +5,4 @@ export * from './logger.ts';
 export * from './redis.ts';
 export * from './db/pool.ts';
 export * from './db/migrate.ts';
+export * from './metrics.ts';

@@ -1,8 +1,8 @@
-import { withTransaction, type CreditBand, type Pool, type Product, type UsState } from '@lre/shared';
-import type { RoutableLead } from './eligibility.ts';
+import { withTransaction, type CreditBand, type Lead, type Pool, type Product, type UsState } from '@lre/shared';
+import type { ClaimedLead } from './eligibility.ts';
 
 export type ClaimResult =
-  | { kind: 'claimed'; lead: RoutableLead }
+  | { kind: 'claimed'; lead: ClaimedLead }
   /** Already sold / unsold / failed: the message is a duplicate, ack it. */
   | { kind: 'final'; status: string }
   /** Another worker holds a live lease: don't ack, let the retry path look again later. */
@@ -38,6 +38,7 @@ interface ClaimRow {
   state: UsState;
   amount_cents: string | null;
   credit_band: CreditBand;
+  payload: Lead;
 }
 
 export class PgLeadStore implements LeadStore {
@@ -53,7 +54,7 @@ export class PgLeadStore implements LeadStore {
        SET status = 'routing', claim_token = $2, routing_attempts = routing_attempts + 1,
            lease_until = now() + make_interval(secs => $3::double precision / 1000)
        WHERE id = $1 AND (status = 'received' OR (status = 'routing' AND lease_until < now()))
-       RETURNING id, product, state, amount_cents, credit_band`,
+       RETURNING id, product, state, amount_cents, credit_band, payload`,
       [leadId, token, leaseMs],
     );
     const row = claimed.rows[0];
@@ -66,6 +67,7 @@ export class PgLeadStore implements LeadStore {
           state: row.state,
           amountCents: row.amount_cents === null ? null : Number(row.amount_cents), // bigint arrives as string
           creditBand: row.credit_band,
+          payload: row.payload,
         },
       };
     }

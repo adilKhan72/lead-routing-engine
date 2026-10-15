@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { createLogger, createPool, createRedis, loadConfig } from '@lre/shared';
+import { createLogger, createPool, createRedis, createRegistry, loadConfig } from '@lre/shared';
 import { buildApp } from './app.ts';
 import { PgLeadRepository } from './lead-repository.ts';
 import { RedisStreamPublisher } from './publisher.ts';
@@ -29,7 +29,7 @@ const app = buildApp(
       await redis.ping();
     },
   },
-  { logger: log },
+  { logger: log, registry: createRegistry('ingest') },
 );
 
 const stopSweeper = startSweeper(repo, publisher, log, {

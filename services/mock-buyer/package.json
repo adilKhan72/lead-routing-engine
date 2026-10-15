@@ -1,0 +1,10 @@
+{
+  "name": "@lre/mock-buyer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@lre/shared": "*",
+    "fastify": "^5.12.7"
+  }
+}

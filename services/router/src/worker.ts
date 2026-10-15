@@ -1,5 +1,6 @@
-import type { HandlerResult, StreamConsumerHooks } from './stream-consumer.ts';
+import type { RouterMetrics } from './metrics.ts';
 import { routeLead, type RouteOutcome, type RouterDeps } from './route-lead.ts';
+import type { HandlerResult, StreamConsumerHooks } from './stream-consumer.ts';
 
 export function toHandlerResult(outcome: RouteOutcome): HandlerResult {
   switch (outcome.kind) {
@@ -13,14 +14,23 @@ export function toHandlerResult(outcome: RouteOutcome): HandlerResult {
   }
 }
 
-export function routerHooks(deps: RouterDeps): StreamConsumerHooks {
+export function routerHooks(deps: RouterDeps, metrics?: RouterMetrics): StreamConsumerHooks {
   return {
     async handle(leadId) {
-      const outcome = await routeLead(deps, leadId);
+      const started = deps.monotonicMs();
+      let outcome: RouteOutcome;
+      try {
+        outcome = await routeLead(deps, leadId);
+      } catch (err) {
+        metrics?.observeError();
+        throw err;
+      }
+      metrics?.observeRouting(outcome, (deps.monotonicMs() - started) / 1000);
       deps.log.info({ leadId, outcome }, 'lead routed');
       return toHandlerResult(outcome);
     },
     async onDeadLetter(leadId, reason) {
+      metrics?.observeDeadLetter();
       if (leadId) await deps.leads.markFailed(leadId, deps.workerName, reason);
     },
   };
