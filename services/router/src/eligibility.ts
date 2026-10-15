@@ -1,4 +1,4 @@
-import type { CreditBand, Product, UsState } from '@lre/shared';
+import type { CreditBand, Lead, Product, UsState } from '@lre/shared';
 import type { Buyer } from './buyer.ts';
 import { isOpen } from './schedule.ts';
 
@@ -9,6 +9,11 @@ export interface RoutableLead {
   state: UsState;
   amountCents: number | null;
   creditBand: CreditBand;
+}
+
+/** A claimed lead: the routable fields plus the full payload, which only the post step may send. */
+export interface ClaimedLead extends RoutableLead {
+  payload: Lead;
 }
 
 export type IneligibleReason = 'outside_schedule' | 'product' | 'state' | 'credit_band' | 'amount_missing' | 'amount_range';

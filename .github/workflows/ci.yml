@@ -77,15 +77,17 @@ jobs:
             -H 'content-type: application/json' -H 'idempotency-key: ci-smoke-0001' \
             -d '{"product":"personal_loan","state":"TX","zip":"73301","amountCents":1500000,"creditBand":"good","contact":{"firstName":"Ci","lastName":"Smoke","email":"ci@example.com","phone":"+15555550123"},"consent":{"tcpa":true,"capturedAt":"2026-10-15T10:00:00Z"},"source":{"publisherId":"ci"}}' \
             | jq -r .leadId)
+          # Buyers are simulated with random behaviour, so assert the lead reached a final state, not who bought it.
           for i in $(seq 1 30); do
             status=$(curl -fsS "http://127.0.0.1:3000/v1/leads/$lead" | jq -r .status)
             echo "lead $lead: $status"
-            [ "$status" = "sold" ] && break
+            case "$status" in sold|unsold) break ;; esac
             sleep 1
           done
-          test "$status" = "sold"
+          case "$status" in sold|unsold) ;; *) exit 1 ;; esac
           docker compose exec -T postgres psql -U lre lre -c \
-            "SELECT b.name, d.price_cents, d.latency_ms, d.decided_by FROM routing_decisions d JOIN buyers b ON b.id = d.buyer_id"
+            "SELECT outcome, price_cents, latency_ms, decided_by, jsonb_pretty(attempts) FROM routing_decisions"
+          docker compose exec -T router wget -qO- http://127.0.0.1:9100/metrics | grep -E '^lre_(routing|buyer)' | head -20 || true
       - name: Logs on failure
         if: failure()
         run: docker compose logs

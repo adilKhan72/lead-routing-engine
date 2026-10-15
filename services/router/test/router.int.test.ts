@@ -67,7 +67,7 @@ describe('router end to end (Postgres + Redis Streams)', () => {
         deadLetterStream: STREAMS.deadLetter,
         group: ROUTER_GROUP,
         consumer: name,
-        batchSize: 8,
+        concurrency: 4,
         blockMs: 100,
         reclaimIntervalMs: 50,
         retry,
@@ -183,4 +183,35 @@ describe('router end to end (Postgres + Redis Streams)', () => {
     const decision = await ctx.pool.query<{ decided_by: string }>('SELECT decided_by FROM routing_decisions');
     expect(decision.rows).toEqual([{ decided_by: 'survivor' }]);
   });
+
+  it('keeps processing other leads while one lead is slow (no head-of-line blocking)', async () => {
+    await insertBuyer(ctx.pool, { priceCents: 1_000 });
+    const [slow, ...fast] = await insertLeads(ctx.pool, 11);
+    for (const id of [slow!, ...fast]) await publishLeadReceived(ctx.redis, id);
+
+    const real = routerHooks(deps('r1'));
+    let releaseSlow: () => void = () => undefined;
+    const slowGate = new Promise<void>((r) => (releaseSlow = r));
+    const hooks: StreamConsumerHooks = {
+      ...real,
+      handle: async (leadId) => {
+        if (leadId === slow) await slowGate;
+        return real.handle(leadId);
+      },
+    };
+    // Concurrency 4: the slow lead holds one slot while the other three slots drain the ten fast leads.
+    const c = consumer('r1', hooks);
+    const loop = c.run();
+    try {
+      await waitFor(async () => (await countByStatus()).sold === 10);
+      expect((await countByStatus()).received).toBe(1);
+      releaseSlow();
+      await waitFor(async () => (await countByStatus()).sold === 11);
+    } finally {
+      releaseSlow();
+      c.stop();
+      await loop;
+    }
+  });
 });
+

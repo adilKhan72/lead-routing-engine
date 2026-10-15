@@ -9,8 +9,8 @@ export interface StreamConsumerOptions {
   deadLetterStream: string;
   group: string;
   consumer: string;
-  /** Messages read per XREADGROUP; they are processed concurrently. */
-  batchSize: number;
+  /** Maximum messages being handled at once. New messages are read as soon as a slot frees up. */
+  concurrency: number;
   blockMs: number;
   reclaimIntervalMs: number;
   retry: RetryPolicy;
@@ -29,6 +29,7 @@ export class StreamConsumer {
   private readonly opts: StreamConsumerOptions;
   private readonly hooks: StreamConsumerHooks;
   private readonly log: Logger;
+  private readonly inFlight = new Set<Promise<void>>();
   private stopping = false;
   private lastReclaim = 0;
 
@@ -52,31 +53,53 @@ export class StreamConsumer {
     this.stopping = true;
   }
 
-  /** Runs until stop(); resolves after the in-flight batch finishes. */
+  /**
+   * Runs until stop(), then waits for in-flight messages. Messages are handled in a sliding window of
+   * `concurrency`: a slow lead (a buyer timing out) holds one slot, not a whole batch.
+   */
   async run(): Promise<void> {
     await this.ensureGroup();
-    while (!this.stopping) {
-      try {
-        await this.pollOnce();
-        if (Date.now() - this.lastReclaim >= this.opts.reclaimIntervalMs) await this.reclaim();
-      } catch (err) {
-        this.log.error({ err }, 'consumer loop error; backing off');
-        await new Promise((r) => setTimeout(r, 1_000));
+    // A dedicated connection for the blocking XREADGROUP, so acks from finished handlers never queue behind it.
+    const reader = this.redis.duplicate();
+    try {
+      while (!this.stopping) {
+        try {
+          const free = this.opts.concurrency - this.inFlight.size;
+          if (free <= 0) {
+            await Promise.race(this.inFlight);
+            continue;
+          }
+          await this.readNew(reader, free);
+          if (Date.now() - this.lastReclaim >= this.opts.reclaimIntervalMs) await this.reclaim();
+        } catch (err) {
+          this.log.error({ err }, 'consumer loop error; backing off');
+          await new Promise((r) => setTimeout(r, 1_000));
+        }
       }
+      await Promise.allSettled(this.inFlight);
+    } finally {
+      reader.disconnect();
     }
   }
 
-  /** Reads and processes one batch of new messages. Returns how many were read. */
-  async pollOnce(): Promise<number> {
-    const reply = (await this.redis.xreadgroup(
+  private async readNew(reader: Redis, count: number): Promise<void> {
+    const reply = (await reader.xreadgroup(
       'GROUP', this.opts.group, this.opts.consumer,
-      'COUNT', this.opts.batchSize,
+      'COUNT', count,
       'BLOCK', this.opts.blockMs,
       'STREAMS', this.opts.stream, '>',
     )) as [string, StreamEntry[]][] | null;
-    const entries = reply?.[0]?.[1] ?? [];
-    await Promise.all(entries.map(([id, fields]) => this.process(id, fields)));
-    return entries.length;
+    for (const [id, fields] of reply?.[0]?.[1] ?? []) this.track(this.process(id, fields));
+  }
+
+  private track(work: Promise<void>): void {
+    const tracked: Promise<void> = work
+      .catch((err: unknown) => {
+        // Only Redis failures (ack / dead-letter) land here; the message stays pending and is retried.
+        this.log.error({ err }, 'failed to settle message');
+      })
+      .finally(() => this.inFlight.delete(tracked));
+    this.inFlight.add(tracked);
   }
 
   /**
@@ -86,12 +109,15 @@ export class StreamConsumer {
    */
   async reclaim(): Promise<number> {
     this.lastReclaim = Date.now();
+    const free = this.opts.concurrency - this.inFlight.size;
+    if (free <= 0) return 0;
     const pending = (await this.redis.xpending(
       this.opts.stream, this.opts.group, 'IDLE', this.opts.retry.baseMs, '-', '+', 100,
     )) as [id: string, consumer: string, idleMs: number, deliveries: number][];
 
     let handled = 0;
     for (const [id, , idleMs, deliveries] of pending) {
+      if (handled >= free) break;
       const action = pendingAction(deliveries, idleMs, this.opts.retry);
       if (action === 'wait') continue;
       // XCLAIM with a min-idle equal to what we just observed: if another consumer claimed it in the
@@ -105,7 +131,7 @@ export class StreamConsumer {
       if (action === 'dead-letter') {
         await this.deadLetter(entry[0], entry[1], `max deliveries (${deliveries}) exceeded`, deliveries);
       } else {
-        await this.process(entry[0], entry[1]);
+        this.track(this.process(entry[0], entry[1]));
       }
     }
     return handled;

@@ -3,7 +3,8 @@ import type { Buyer } from '../src/buyer.ts';
 import type { BuyerGateway, DeliveryResult } from '../src/buyer-gateway.ts';
 import type { BuyerSource } from '../src/buyer-source.ts';
 import { capWindows, type CapStore, type Reservation } from '../src/caps.ts';
-import type { RoutableLead } from '../src/eligibility.ts';
+import { makeLead } from '@lre/shared/testing';
+import type { ClaimedLead } from '../src/eligibility.ts';
 import type { ClaimResult, Decision, LeadStore } from '../src/lead-store.ts';
 import type { RouterDeps } from '../src/route-lead.ts';
 import { seededRng } from '../src/selection.ts';
@@ -30,18 +31,26 @@ export function makeBuyer(overrides: Partial<Buyer> = {}): Buyer {
   };
 }
 
-export function makeRoutableLead(overrides: Partial<RoutableLead> = {}): RoutableLead {
-  return { id: 'lead-1', product: 'personal_loan', state: 'TX', amountCents: 1_500_000, creditBand: 'good', ...overrides };
+export function makeRoutableLead(overrides: Partial<ClaimedLead> = {}): ClaimedLead {
+  return {
+    id: 'lead-1',
+    product: 'personal_loan',
+    state: 'TX',
+    amountCents: 1_500_000,
+    creditBand: 'good',
+    payload: makeLead(),
+    ...overrides,
+  };
 }
 
 export class InMemoryLeadStore implements LeadStore {
-  readonly leads = new Map<string, { lead: RoutableLead; status: string; token: string | null }>();
+  readonly leads = new Map<string, { lead: ClaimedLead; status: string; token: string | null }>();
   readonly decisions = new Map<string, Decision>();
   readonly failed = new Map<string, string>();
   /** Simulates another worker taking over between claim and finalize. */
   stealLeaseOnFinalize = false;
 
-  add(lead: RoutableLead, status = 'received'): void {
+  add(lead: ClaimedLead, status = 'received'): void {
     this.leads.set(lead.id, { lead, status, token: null });
   }
 

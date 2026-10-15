@@ -1,6 +1,6 @@
 import Fastify, { type FastifyBaseLogger, type FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { LeadSchema, type Logger } from '@lre/shared';
+import { Counter, Histogram, LATENCY_BUCKETS, LeadSchema, type Logger, type Registry } from '@lre/shared';
 import { acceptLead, type AcceptDeps } from './accept-lead.ts';
 
 export interface AppDeps extends AcceptDeps {
@@ -11,13 +11,38 @@ export interface AppDeps extends AcceptDeps {
 const IdempotencyKey = z.string().min(8).max(255).regex(/^[\w.:-]+$/);
 const LeadIdParam = z.strictObject({ id: z.uuid() });
 
-export function buildApp(deps: AppDeps, opts: { logger?: Logger } = {}): FastifyInstance {
+export function buildApp(deps: AppDeps, opts: { logger?: Logger; registry?: Registry } = {}): FastifyInstance {
   // Widened to Fastify's logger type so the instance type matches FastifyInstance's defaults.
   const logger: FastifyBaseLogger | undefined = opts.logger;
   const app = Fastify({
     ...(logger ? { loggerInstance: logger } : { logger: false }),
     bodyLimit: 16 * 1024,
   });
+
+  const registry = opts.registry;
+  const accepted = registry
+    ? new Counter({
+        name: 'lre_leads_accepted_total',
+        help: 'Leads answered with 202, split by whether the request was an idempotent replay',
+        labelNames: ['replayed'],
+        registers: [registry],
+      })
+    : null;
+  if (registry) {
+    const duration = new Histogram({
+      name: 'lre_http_request_duration_seconds',
+      help: 'HTTP request latency by route and status code',
+      labelNames: ['method', 'route', 'status_code'],
+      buckets: LATENCY_BUCKETS,
+      registers: [registry],
+    });
+    app.addHook('onResponse', async (req, reply) => {
+      // routeOptions.url is the route pattern (/v1/leads/:id), which keeps label cardinality bounded.
+      const route = req.routeOptions.url ?? 'unmatched';
+      duration.observe({ method: req.method, route, status_code: reply.statusCode }, reply.elapsedTime / 1000);
+    });
+    app.get('/metrics', async (_req, reply) => reply.type(registry.contentType).send(await registry.metrics()));
+  }
 
   app.post('/v1/leads', async (req, reply) => {
     const key = IdempotencyKey.safeParse(req.headers['idempotency-key']);
@@ -43,6 +68,7 @@ export function buildApp(deps: AppDeps, opts: { logger?: Logger } = {}): Fastify
         leadId: result.leadId,
       });
     }
+    accepted?.inc({ replayed: String(result.replayed) });
     if (result.replayed) reply.header('idempotent-replayed', 'true');
     return reply
       .code(202)

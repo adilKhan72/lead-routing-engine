@@ -95,6 +95,7 @@ Design decisions and their trade-offs are in [`docs/adr/`](docs/adr):
 - [ADR-0002: Cap enforcement with conditional upserts in Postgres](docs/adr/0002-cap-enforcement.md)
 - [ADR-0003: Idempotency and effectively-once processing](docs/adr/0003-idempotency-effectively-once.md)
 - [ADR-0004: Ping-post timeouts and fallback](docs/adr/0004-ping-post-timeouts-fallback.md)
+- [ADR-0005: Sliding-window consumer concurrency](docs/adr/0005-sliding-window-consumer.md)
 
 ## Roadmap
 
@@ -103,8 +104,8 @@ Design decisions and their trade-offs are in [`docs/adr/`](docs/adr):
 | M0 | README, ADRs, licence | Done |
 | M1 | npm-workspaces monorepo (TS strict, ESLint, Vitest), ingest service with validation and idempotency, Postgres migrations, docker-compose, CI with integration tests against Postgres and Redis | Done |
 | M2 | Router worker: eligibility filters, atomic caps, tier + weighted selection, consumer group with ack / retry / DLQ, idempotent processing, concurrency tests | Done (buyer calls are simulated: every buyer accepts until M3) |
-| M3 | Ping-post over HTTP with timeouts and fallback (mock buyer server), Prometheus metrics, k6 load test | Planned |
-| M4 | Kubernetes manifests (kustomize), HPA on stream lag, load test results in this README | Planned |
+| M3 | Ping-post over HTTP with timeouts and fallback (mock buyer server), Prometheus metrics, k6 load test | Done (load test run on a laptop only, see below) |
+| M4 | Kubernetes manifests (kustomize), HPA on stream lag, load test on a multi-node setup | Planned |
 | M5 | Reconciliation: cap counters vs sales ledger, and re-publishing leads stuck in `received` / `routing` with no stream entry (Redis data loss, stream trimming); buyer admin API; OpenTelemetry tracing | Planned |
 
 ## Running locally
@@ -112,7 +113,7 @@ Design decisions and their trade-offs are in [`docs/adr/`](docs/adr):
 Requires Docker (and Node 22+ for development).
 
 ```bash
-docker compose up --build -d          # postgres, redis, migrations, ingest on :3000, 2 router replicas
+docker compose up --build -d          # postgres, redis, migrations, ingest on :3000, 2 routers, mock buyers
 docker compose exec -T postgres psql -U lre lre < db/seed/demo-buyers.sql
 curl -i -X POST http://localhost:3000/v1/leads \
   -H 'content-type: application/json' -H 'idempotency-key: demo-0001' \
@@ -138,7 +139,9 @@ docker compose down -v
 ```
 packages/shared     lead schema (zod), stream helpers, config, logger, pg/redis clients, migration runner
 services/ingest     Fastify HTTP edge + outbox sweeper
-services/router     consumer-group worker: eligibility, selection, caps, retry/DLQ
+services/router     consumer-group worker: eligibility, selection, caps, ping-post, retry/DLQ, metrics
+services/mock-buyer simulated buyer endpoints (fast / picky / flaky / slow / never profiles)
+loadtest            k6 script and the SQL report that checks invariants after a run
 db/seed             demo buyers for local runs
 db/migrations       plain SQL, applied in order under an advisory lock
 scripts/build.mjs   esbuild: one bundle per service in dist/, so the runtime image has no node_modules
@@ -147,7 +150,7 @@ scripts/build.mjs   esbuild: one bundle per service in dist/, so the runtime ima
 ```bash
 npm ci
 npm run check                 # lint (typescript-eslint strict, type-aware) + typecheck + unit tests
-npm run build                 # dist/ingest.js, dist/migrate.js
+npm run build                 # dist/ingest.js, dist/router.js, dist/mock-buyer.js, dist/migrate.js
 
 # Integration tests need a real Postgres and Redis; they drop and recreate the public schema.
 docker compose up -d postgres redis
@@ -168,10 +171,64 @@ Redis 7 service containers). The ones that matter most:
 - **Crash recovery:** a consumer reads a message and claims the lead, then "dies"; another consumer
   re-claims the message, waits out the lease and sells the lead exactly once.
 
+## Observability
+
+Logs are structured JSON (pino) with contact details redacted. Metrics are Prometheus text format:
+ingest on `GET /metrics` (same port as the API), router on `:9100/metrics`.
+
+| Metric | Type | What it tells you |
+|---|---|---|
+| `lre_http_request_duration_seconds{method,route,status_code}` | histogram | Edge latency per route pattern. |
+| `lre_leads_accepted_total{replayed}` | counter | Accepted leads, and how many were publisher retries. |
+| `lre_routing_duration_seconds{outcome}` | histogram | Claim to commit, per outcome (`sold`, `unsold`, `duplicate`, `busy`, `lost_lease`). |
+| `lre_routing_outcomes_total{outcome,reason}` | counter | Decisions, with the unsold reason. |
+| `lre_buyer_call_duration_seconds{phase,result}` | histogram | Ping and post latency per result (`accepted`, `rejected`, `timeout`, `error`). |
+| `lre_stream_group_lag` / `lre_stream_group_pending` | gauge | Undelivered backlog and in-flight/awaiting-retry messages, read from Redis at scrape time. Lag is the autoscaling signal. |
+| `lre_routing_errors_total`, `lre_dead_lettered_total` | counter | Infrastructure errors (retried) and dead-lettered messages. |
+
 ## Load test results
 
-Not yet run. This section will hold the k6 scenario, the hardware it ran on, and the measured
-throughput and latency percentiles once M3 lands.
+[`loadtest/ingest.js`](loadtest/ingest.js) drives the HTTP edge with k6 at a constant arrival rate
+(5% of requests are publisher retries re-sending an earlier key and body). Routing latency comes from
+the decisions the routers record, via [`loadtest/report.sql`](loadtest/report.sql), which also checks
+the invariants: no lead with two decisions, no cap exceeded, cap counters equal to the sales ledger.
+
+**Setup, so the numbers can be judged:** one laptop (Intel i7-1165G7, 4 cores / 8 threads, 16 GB RAM,
+about 1.5 GB of it free), with other workloads running. 1 ingest process, 2 router processes
+(concurrency 32 each), 1 mock-buyer process, all on the host; Postgres 17 and Redis 7 in Docker
+Desktop containers (256 MB / 64 MB memory limits), so every database and Redis call crosses the
+Docker Desktop VM boundary; k6 v2.3.0 in a container reaching the API through `host.docker.internal`.
+`LOG_LEVEL=warn`. Demo buyers from [`db/seed/demo-buyers.sql`](db/seed/demo-buyers.sql). This is a
+smoke-level capacity check, not a benchmark of what the design can do on real infrastructure.
+
+| Run | Offered rate | Accepted (HTTP p50 / p95 / p99) | Router time p50 / p95 / p99 | Accept → decision p50 / p95 / p99 | Stream lag after run | Invariants |
+|---|---|---|---|---|---|---|
+| Real ping-post (mock buyers), batch consumer (before fix) | 100/s for 30 s | 100% (14 / 114 / 205 ms) | 96 / 614 / 904 ms | 17.8 / 30.8 / 31.7 **s** | 1,145 | all hold |
+| Real ping-post (mock buyers), sliding-window consumer | 100/s for 60 s | 100% (59 / 161 / 268 ms) | 175 / 1,128 / 1,565 ms | 0.40 / 1.87 / 2.40 s | 0 | all hold |
+| Buyers out of the picture (`accept-all`) | 150/s for 60 s | 100% (24 / 87 / 214 ms) | 20 / 165 / 405 ms | 0.03 / 0.50 / 0.90 s | 0 | all hold |
+| Buyers out of the picture (`accept-all`) | 300/s for 60 s | **only ~185/s achieved** (3.0 / 4.1 / 4.6 s) | 195 / 459 / 625 ms | 4.8 / 6.4 / 6.5 s | 84 | all hold |
+
+What the runs showed:
+
+- **The first run found a real bug in the design.** Routers read a batch, processed it with
+  `Promise.all` and only then read again, so every batch waited for its slowest lead (a buyer timing
+  out). At 100 leads/s the routers fell further behind every second. The consumer now keeps a sliding
+  window of in-flight messages, with the blocking read on its own connection so acks never queue
+  behind it, and the same load leaves no backlog.
+- With real (simulated) buyers, routing time is dominated by buyer behaviour: the `slow` profile
+  answers in 200-900 ms against a 300 ms ping timeout, and the `flaky` one returns 503s, so p95 sits
+  around one second of fallbacks. That is the latency budget doing its job, not engine overhead.
+- With buyers removed, two routers keep up with 150 leads/s at a 20 ms median. At 300/s offered, the
+  single ingest process saturated at about 185 requests/s on this machine; this run is the
+  machine's ceiling, not a sustainable operating point.
+- Across all runs (about 28,000 leads), no lead was decided twice, no cap was exceeded, and every cap
+  counter matched the sales ledger after the backlog drained.
+
+One further run was discarded: a stray second k6 process from an interrupted invocation was hitting
+the same stack, so its numbers measured double the stated load.
+
+Not yet measured: multiple ingest replicas, Postgres on its own host, a hot buyer at scale, failure
+injection (killing routers or Redis mid-run) under load.
 
 ## Licence
 
