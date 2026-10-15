@@ -1,0 +1,43 @@
+# ADR-0003: Idempotency and effectively-once processing
+
+- Status: Accepted
+- Date: 2026-10-15
+
+## Context
+
+Exactly-once *delivery* across a network is not achievable. Publishers retry on timeouts, Redis
+redelivers unacknowledged messages, and workers crash mid-flight. What the business needs is that a
+lead is stored once and sold at most once, and that no lead is silently lost.
+
+## Decision
+
+**At the edge (ingest):**
+
+- `Idempotency-Key` header is required. `leads.idempotency_key` is unique. Insert with
+  `ON CONFLICT DO NOTHING`; on conflict, compare a SHA-256 hash of the canonical payload: same
+  payload returns the original lead id (`202`, `Idempotent-Replayed: true`), a different payload
+  returns `409`.
+- **The `leads` table is the outbox.** A lead is inserted with `published_at = NULL`, then `XADD`ed,
+  then marked published. If the process dies between the insert and the `XADD`, a sweeper republishes
+  leads that have stayed unpublished longer than a grace period. This avoids a separate outbox table
+  while keeping the dual write safe; the cost is that the stream may receive duplicates, which the
+  consumer tolerates by design.
+
+**In the router (idempotent consumer):**
+
+- Claim: `UPDATE leads SET status = 'routing', lease_until = now() + lease WHERE id = $1 AND
+  (status = 'received' OR (status = 'routing' AND lease_until < now()))`. Zero rows means another
+  worker owns it or it is already final: ack and move on.
+- The final decision is written in the same transaction that moves the lead to `sold` / `unsold`,
+  guarded by a partial unique index `routing_decisions(lead_id) WHERE outcome = 'sold'`.
+- The stream message is acked only after that transaction commits.
+
+## Consequences
+
+- Effectively-once from the business's point of view: duplicates are absorbed at both the edge and
+  the consumer.
+- A buyer endpoint can be called twice for the same lead if a worker crashes after the buyer accepted
+  but before the commit. We send the lead id with every ping and post so buyers can de-duplicate, and
+  record it as a known limitation rather than pretending otherwise.
+- Idempotency keys are scoped globally in this version; per-publisher scoping arrives with publisher
+  authentication.
