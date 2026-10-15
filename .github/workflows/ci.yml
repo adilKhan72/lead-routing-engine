@@ -63,20 +63,29 @@ jobs:
       - run: npm run test:integration
 
   image:
-    name: Docker image builds and migrates
+    name: Compose end-to-end smoke test
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
-      - name: Compose smoke test
+      - name: Compose smoke test (ingest -> stream -> router -> sold)
         run: |
-          docker compose up -d --build ingest
+          docker compose up -d --build ingest router
           curl -fsS --retry 30 --retry-all-errors --retry-delay 2 http://127.0.0.1:3000/readyz
-          curl -fsS -X POST http://127.0.0.1:3000/v1/leads \
+          docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U lre lre < db/seed/demo-buyers.sql
+          lead=$(curl -fsS -X POST http://127.0.0.1:3000/v1/leads \
             -H 'content-type: application/json' -H 'idempotency-key: ci-smoke-0001' \
-            -d '{"product":"auto_insurance","state":"CA","zip":"94105","creditBand":"fair","contact":{"firstName":"Ci","lastName":"Smoke","email":"ci@example.com","phone":"+14155550123"},"consent":{"tcpa":true,"capturedAt":"2026-10-15T10:00:00Z"},"source":{"publisherId":"ci"}}' \
-            | tee /dev/stderr | grep -q '"status":"received"'
-          test "$(docker compose exec -T redis redis-cli XLEN leads.received)" = "1"
+            -d '{"product":"personal_loan","state":"TX","zip":"73301","amountCents":1500000,"creditBand":"good","contact":{"firstName":"Ci","lastName":"Smoke","email":"ci@example.com","phone":"+15555550123"},"consent":{"tcpa":true,"capturedAt":"2026-10-15T10:00:00Z"},"source":{"publisherId":"ci"}}' \
+            | jq -r .leadId)
+          for i in $(seq 1 30); do
+            status=$(curl -fsS "http://127.0.0.1:3000/v1/leads/$lead" | jq -r .status)
+            echo "lead $lead: $status"
+            [ "$status" = "sold" ] && break
+            sleep 1
+          done
+          test "$status" = "sold"
+          docker compose exec -T postgres psql -U lre lre -c \
+            "SELECT b.name, d.price_cents, d.latency_ms, d.decided_by FROM routing_decisions d JOIN buyers b ON b.id = d.buyer_id"
       - name: Logs on failure
         if: failure()
         run: docker compose logs

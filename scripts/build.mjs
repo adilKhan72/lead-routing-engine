@@ -4,6 +4,7 @@ import { build } from 'esbuild';
 
 const entryPoints = {
   ingest: 'services/ingest/src/main.ts',
+  router: 'services/router/src/main.ts',
   migrate: 'packages/shared/src/db/migrate-cli.ts',
 };
 

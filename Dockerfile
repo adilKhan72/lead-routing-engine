@@ -5,6 +5,7 @@ WORKDIR /src
 COPY package.json package-lock.json ./
 COPY packages/shared/package.json packages/shared/
 COPY services/ingest/package.json services/ingest/
+COPY services/router/package.json services/router/
 RUN npm ci --ignore-scripts
 COPY tsconfig.json ./
 COPY scripts scripts
