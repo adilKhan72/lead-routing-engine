@@ -32,6 +32,11 @@ lead is stored once and sold at most once, and that no lead is silently lost.
   That update is fenced on `claim_token`, so a worker whose lease expired and was taken over cannot
   commit a stale decision. `routing_decisions.lead_id` is unique as a last line of defence.
 - The stream message is acked only after that transaction commits.
+- A lead held by another worker's live lease is reported *busy* and its message is **not** acked: if
+  we acked it and that worker then crashed, nothing would ever route the lead. The message is
+  retried with backoff; by then the lead is final (ack) or the lease has expired (re-claim). This
+  only works if a lease is shorter than the whole retry window, otherwise a busy lead could be
+  dead-lettered while it is still being routed, so the router checks that at startup.
 
 ## Consequences
 

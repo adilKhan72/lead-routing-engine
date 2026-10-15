@@ -57,6 +57,17 @@ services:
       timeout: 3s
       retries: 10
 
+  router:
+    build: .
+    command: ["dist/router.js"]
+    environment:
+      <<: *app-env
+    deploy:
+      replicas: 2
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+
 volumes:
   pgdata:
   redisdata:

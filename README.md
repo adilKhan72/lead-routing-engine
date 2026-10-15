@@ -58,7 +58,9 @@ flowchart LR
 For each lead the router:
 
 1. **Claims** the lead with a conditional `UPDATE ... WHERE status = 'received' OR lease expired`.
-   A duplicate stream message, or a second worker, finds nothing to claim and acks.
+   A duplicate message for a lead that is already final is acked. If another worker holds a live
+   lease the message is left pending and looked at again later, so a crash of that worker can't
+   strand the lead.
 2. **Filters** buyers: active, inside their schedule (evaluated in the buyer's time zone), and matching
    every filter on the lead.
 3. **Orders** candidates: by price descending; within an equal price, a weighted random shuffle
@@ -79,7 +81,8 @@ For each lead the router:
 | Delivery to the router | At-least-once: messages are acked only after the decision is committed; unacked messages are reclaimed. |
 | Each lead sold at most once | Idempotent consumer: lead claim with a lease and fencing token, plus a unique constraint on `routing_decisions(lead_id)` (one final decision per lead). At-least-once delivery + idempotent consumer = **effectively-once** from the business's point of view. |
 | Caps never exceeded | Cap counters are reserved with a single-statement conditional upsert in Postgres, so concurrent workers serialize on the counter row. A crash between reserve and release can *under*-fill a cap, never overfill it. |
-| Poison messages don't block the stream | Retries with exponential backoff (based on idle time and delivery count), then the message moves to a dead-letter stream and the lead is marked `failed`. |
+| Poison messages don't block the stream | Unacked messages are re-claimed (`XPENDING` + `XCLAIM`) once their idle time exceeds an exponential backoff for their delivery count; after `MAX_DELIVERIES` they move to `leads.dead-letter` (`XADD` + `XACK` in one `MULTI`) and the lead is marked `failed`. The router refuses to start if a lease could outlive the retry window. |
+| A crashed worker doesn't strand work | Its unacked messages are re-claimed by other consumers; its lease on the lead expires and the lead is re-claimed with a new fencing token. |
 
 What is deliberately **not** guaranteed: exactly-once *delivery* (nobody has that; we de-duplicate
 instead), and exactly-once calls to buyer endpoints (a crash after a buyer accepted but before the
@@ -99,24 +102,26 @@ Design decisions and their trade-offs are in [`docs/adr/`](docs/adr):
 |---|---|---|
 | M0 | README, ADRs, licence | Done |
 | M1 | npm-workspaces monorepo (TS strict, ESLint, Vitest), ingest service with validation and idempotency, Postgres migrations, docker-compose, CI with integration tests against Postgres and Redis | Done |
-| M2 | Router worker: eligibility filters, atomic caps, tier + weighted selection, consumer group with ack / retry / DLQ, idempotent processing, concurrency tests | Planned |
+| M2 | Router worker: eligibility filters, atomic caps, tier + weighted selection, consumer group with ack / retry / DLQ, idempotent processing, concurrency tests | Done (buyer calls are simulated: every buyer accepts until M3) |
 | M3 | Ping-post over HTTP with timeouts and fallback (mock buyer server), Prometheus metrics, k6 load test | Planned |
 | M4 | Kubernetes manifests (kustomize), HPA on stream lag, load test results in this README | Planned |
-| M5 | Cap reconciliation job, buyer admin API, OpenTelemetry tracing | Planned |
+| M5 | Reconciliation: cap counters vs sales ledger, and re-publishing leads stuck in `received` / `routing` with no stream entry (Redis data loss, stream trimming); buyer admin API; OpenTelemetry tracing | Planned |
 
 ## Running locally
 
 Requires Docker (and Node 22+ for development).
 
 ```bash
-docker compose up --build -d          # postgres, redis, migrations, ingest on :3000
+docker compose up --build -d          # postgres, redis, migrations, ingest on :3000, 2 router replicas
+docker compose exec -T postgres psql -U lre lre < db/seed/demo-buyers.sql
 curl -i -X POST http://localhost:3000/v1/leads \
   -H 'content-type: application/json' -H 'idempotency-key: demo-0001' \
   -d '{"product":"personal_loan","state":"TX","zip":"73301","amountCents":1500000,"creditBand":"good",
        "contact":{"firstName":"Ada","lastName":"Lovelace","email":"ada@example.com","phone":"+15555550123"},
        "consent":{"tcpa":true,"capturedAt":"2026-10-15T09:30:00Z"},"source":{"publisherId":"pub-1"}}'
 # 202 {"leadId":"…","status":"received"}; repeat it and you get the same leadId with Idempotent-Replayed: true
-docker compose exec redis redis-cli XRANGE leads.received - +
+curl -s http://localhost:3000/v1/leads/<leadId>   # {"status":"sold",...}
+docker compose exec postgres psql -U lre lre -c 'SELECT outcome, buyer_id, price_cents, attempts FROM routing_decisions'
 docker compose down -v
 ```
 
@@ -133,6 +138,8 @@ docker compose down -v
 ```
 packages/shared     lead schema (zod), stream helpers, config, logger, pg/redis clients, migration runner
 services/ingest     Fastify HTTP edge + outbox sweeper
+services/router     consumer-group worker: eligibility, selection, caps, retry/DLQ
+db/seed             demo buyers for local runs
 db/migrations       plain SQL, applied in order under an advisory lock
 scripts/build.mjs   esbuild: one bundle per service in dist/, so the runtime image has no node_modules
 ```
@@ -147,8 +154,19 @@ docker compose up -d postgres redis
 DATABASE_URL=postgres://lre:lre@localhost:5432/lre REDIS_URL=redis://localhost:6379/1 npm run test:integration
 ```
 
-Unit tests use in-memory fakes behind the same interfaces as the Postgres and Redis adapters; integration
-tests run the real adapters (CI uses Postgres 17 and Redis 7 service containers).
+Unit tests use in-memory fakes behind the same interfaces as the Postgres and Redis adapters, with the
+clock and random source injected. Integration tests run the real adapters (CI uses Postgres 17 and
+Redis 7 service containers). The ones that matter most:
+
+- **No double-selling, caps exact:** 40 leads, every stream message published three times, four
+  consumers racing; asserts one decision per lead, sales per buyer equal to their caps, and cap
+  counters equal to the sales ledger.
+- **Caps under contention:** 60 concurrent reservations against a cap of 10 grant exactly 10;
+  hour and day windows are reserved together or not at all.
+- **Retry and dead-letter:** a lead whose handler keeps failing is delivered `MAX_DELIVERIES` times
+  with backoff, then dead-lettered and marked `failed`, without blocking the healthy lead behind it.
+- **Crash recovery:** a consumer reads a message and claims the lead, then "dies"; another consumer
+  re-claims the message, waits out the lease and sells the lead exactly once.
 
 ## Load test results
 

@@ -15,6 +15,11 @@ export default tseslint.config(
     },
   },
   {
+    // Tests assert shapes explicitly; `!` after a known-good lookup keeps them readable.
+    files: ['**/test/**/*.ts'],
+    rules: { '@typescript-eslint/no-non-null-assertion': 'off' },
+  },
+  {
     files: ['**/*.js', '**/*.mjs'],
     extends: [tseslint.configs.disableTypeChecked],
   },
