@@ -41,5 +41,5 @@ spec:
     - from:
         - podSelector:
             matchExpressions:
-              - { key: app.kubernetes.io/name, operator: In, values: [ingest, router] }
+              - { key: app.kubernetes.io/name, operator: In, values: [ingest, router, reconciler] }
       ports: [{ port: 6379 }]

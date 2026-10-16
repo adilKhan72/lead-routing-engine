@@ -7,6 +7,7 @@ const entryPoints = {
   router: 'services/router/src/main.ts',
   'mock-buyer': 'services/mock-buyer/src/main.ts',
   migrate: 'packages/shared/src/db/migrate-cli.ts',
+  reconcile: 'services/router/src/reconcile-cli.ts',
 };
 
 await build({

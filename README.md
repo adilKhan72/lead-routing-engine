@@ -96,6 +96,7 @@ Design decisions and their trade-offs are in [`docs/adr/`](docs/adr):
 - [ADR-0003: Idempotency and effectively-once processing](docs/adr/0003-idempotency-effectively-once.md)
 - [ADR-0004: Ping-post timeouts and fallback](docs/adr/0004-ping-post-timeouts-fallback.md)
 - [ADR-0005: Sliding-window consumer concurrency](docs/adr/0005-sliding-window-consumer.md)
+- [ADR-0006: The reconciler repairs only provable drift](docs/adr/0006-reconciler-repairs-only-provable-drift.md)
 
 ## Roadmap
 
@@ -106,7 +107,7 @@ Design decisions and their trade-offs are in [`docs/adr/`](docs/adr):
 | M2 | Router worker: eligibility filters, atomic caps, tier + weighted selection, consumer group with ack / retry / DLQ, idempotent processing, concurrency tests | Done (buyer calls are simulated: every buyer accepts until M3) |
 | M3 | Ping-post over HTTP with timeouts and fallback (mock buyer server), Prometheus metrics, k6 load test | Done (load test run on a laptop only, see below) |
 | M4 | Kubernetes: kustomize base + demo/production overlays, KEDA autoscaling on stream lag, schema validation and a kind smoke test in CI | Done (multi-node load test not run) |
-| M5 | Reconciliation: cap counters vs sales ledger, and re-publishing leads stuck in `received` / `routing` with no stream entry (Redis data loss, stream trimming); buyer admin API; OpenTelemetry tracing | Planned |
+| M5 | Reconciler: re-publish stuck leads, release leaked cap slots without ever enabling an oversell, CronJob, audit table (ADR-0006) | Done (buyer admin API and OpenTelemetry tracing not built) |
 
 ## Kubernetes
 
