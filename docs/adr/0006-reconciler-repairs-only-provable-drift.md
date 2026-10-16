@@ -33,3 +33,8 @@ A one-shot reconciler, run every minute by a Kubernetes CronJob (`concurrencyPol
   slots may wait for a quieter run. That's the price of never risking an oversell.
 - A worker that outlives its lease by more than the grace period and *then* releases its slot can still
   double-decrement. With a 2 s routing budget and a 60 s grace, that needs a ~1 minute stall. That's documented, not eliminated.
+
+## Operational note
+The reconciler is its own workload, so anything that allow-lists database clients must include it. The demo
+overlay's NetworkPolicies initially admitted only `ingest` and `router`; on a NetworkPolicy-enforcing cluster the
+reconciler's connections hung until `activeDeadlineSeconds` killed the Job. The kind smoke test caught this.
