@@ -1,0 +1,21 @@
+# Production shape: managed PostgreSQL and Redis, secrets from an external store, routers autoscaled on backlog.
+# Prerequisites: a `lre-secrets` Secret (DATABASE_URL, REDIS_URL) in the namespace, e.g. via External Secrets
+# Operator; KEDA installed; Prometheus at the address in components/keda/scaledobject.yaml.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: lre
+resources:
+  - namespace.yaml
+  - ../../base
+components:
+  - ../../components/keda
+images:
+  - name: lead-routing-engine
+    newName: ghcr.io/adilkhan72/lead-routing-engine
+    newTag: "0.4.0"  # pin a tag or digest per release; never :latest in production
+patches:
+  - target: { kind: Deployment, name: ingest }
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 3

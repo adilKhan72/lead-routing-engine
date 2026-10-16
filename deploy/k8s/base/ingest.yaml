@@ -1,0 +1,102 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ingest
+  labels: { app.kubernetes.io/name: ingest }
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app.kubernetes.io/name: ingest }
+  strategy:
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: ingest }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3000"
+        prometheus.io/path: /metrics
+    spec:
+      # Migrations run before every pod starts; the runner holds a Postgres advisory lock, so concurrent
+      # pods (and the router's init container) serialise safely and later ones find nothing to apply.
+      initContainers:
+        - name: migrate
+          image: lead-routing-engine
+          args: ["dist/migrate.js"]
+          envFrom:
+            - secretRef: { name: lre-secrets }
+          securityContext: &restricted
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          resources: &small
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { memory: 128Mi }
+      containers:
+        - name: ingest
+          image: lead-routing-engine
+          args: ["dist/ingest.js"]
+          ports:
+            - { name: http, containerPort: 3000 }
+          envFrom:
+            - configMapRef: { name: lre-config }
+            - secretRef: { name: lre-secrets }
+          env:
+            - { name: PORT, value: "3000" }
+          readinessProbe:
+            # /readyz checks Postgres and Redis: an instance that can't publish must not receive leads.
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 5
+            failureThreshold: 2
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+            failureThreshold: 3
+          lifecycle:
+            # Give endpoints time to drop this pod before SIGTERM; the app then drains in-flight requests.
+            preStop:
+              exec: { command: ["sleep", "5"] }
+          securityContext: *restricted
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { memory: 256Mi }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      terminationGracePeriodSeconds: 30
+      volumes:
+        - { name: tmp, emptyDir: {} }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ingest
+spec:
+  selector: { app.kubernetes.io/name: ingest }
+  ports:
+    - { name: http, port: 80, targetPort: http }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: ingest
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: ingest }
+---
+# Ingest is stateless request/response: CPU tracks load well. Routers scale on backlog instead (components/keda).
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ingest
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: ingest }
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: 70 }

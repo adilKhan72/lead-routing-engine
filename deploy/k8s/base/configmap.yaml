@@ -1,0 +1,16 @@
+# Non-secret settings. DATABASE_URL and REDIS_URL come from the `lre-secrets` Secret, which every overlay
+# must provide (generated in demo, from an external secret store in production).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: lre-config
+data:
+  LOG_LEVEL: info
+  PG_POOL_SIZE: "10"
+  # Router
+  CONCURRENCY: "32"
+  ROUTING_BUDGET_MS: "2000"
+  LEASE_MS: "10000"
+  MAX_DELIVERIES: "5"
+  ROUTER_GATEWAY: http
+  METRICS_PORT: "9100"

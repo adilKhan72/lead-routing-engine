@@ -94,3 +94,45 @@ jobs:
       - name: Tear down
         if: always()
         run: docker compose down -v
+
+  k8s-validate:
+    name: Kubernetes manifests (kustomize + kubeconform)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install kustomize and kubeconform
+        run: |
+          curl -sSL https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz | tar -xz -C /usr/local/bin kustomize
+          curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | tar -xz -C /usr/local/bin kubeconform
+      - name: Build and validate every overlay (CRDs such as KEDA's ScaledObject via the datree catalog)
+        run: |
+          for overlay in deploy/k8s/overlays/*/; do
+            echo "::group::$overlay"
+            kustomize build "$overlay" | kubeconform -strict -summary -kubernetes-version 1.31.0 \
+              -schema-location default \
+              -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
+            echo "::endgroup::"
+          done
+
+  k8s-smoke:
+    name: Kubernetes smoke test (kind)
+    needs: k8s-validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: lre
+      - name: Build image and load it into kind
+        run: |
+          docker build -t lead-routing-engine:latest .
+          kind load docker-image lead-routing-engine:latest --name lre
+      - name: Deploy demo overlay and route a lead end to end
+        run: scripts/k8s-smoke.sh
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          kubectl -n lre-demo get pods -o wide
+          kubectl -n lre-demo describe pods | tail -80
+          kubectl -n lre-demo logs deployment/ingest --all-containers --tail=80 || true
+          kubectl -n lre-demo logs deployment/router --all-containers --tail=80 || true
