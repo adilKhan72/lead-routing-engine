@@ -1,0 +1,48 @@
+# Self-contained demo: in-cluster Postgres + Redis + mock buyers. Used by the kind smoke test in CI.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: lre-demo
+resources:
+  - namespace.yaml
+  - ../../base
+  - postgres.yaml
+  - redis.yaml
+  - mock-buyer.yaml
+secretGenerator:
+  - name: lre-secrets
+    literals:
+      # Demo-only credentials for the in-cluster database. Production never generates secrets.
+      - DATABASE_URL=postgres://lre:lre@postgres:5432/lre
+      - REDIS_URL=redis://redis:6379/0
+generatorOptions:
+  disableNameSuffixHash: true
+patches:
+  # One replica each is enough for a demo cluster; HPA floors would fight that, so drop the HPA here.
+  - target: { kind: Deployment, name: "ingest|router" }
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 1
+  - target: { kind: HorizontalPodAutoscaler, name: ingest }
+    patch: |-
+      $patch: delete
+      apiVersion: autoscaling/v2
+      kind: HorizontalPodAutoscaler
+      metadata:
+        name: ingest
+  # The demo image is built locally and loaded into the cluster (kind load), never pulled.
+  - target: { kind: Deployment, name: "ingest|router|mock-buyer" }
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: IfNotPresent
+  - target: { kind: Deployment, name: "ingest|router" }
+    patch: |-
+      - op: add
+        path: /spec/template/spec/initContainers/0/imagePullPolicy
+        value: IfNotPresent
+  - target: { kind: PodDisruptionBudget }
+    patch: |-
+      - op: replace
+        path: /spec/minAvailable
+        value: 0

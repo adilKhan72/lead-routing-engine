@@ -1,0 +1,53 @@
+# Simulated buyer endpoints (fast / picky / flaky / slow / never), as in docker-compose. The seed data points at
+# http://mock-buyer:4000, which this Service satisfies inside the namespace.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mock-buyer
+  labels: { app.kubernetes.io/name: mock-buyer }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: mock-buyer }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: mock-buyer }
+    spec:
+      containers:
+        - name: mock-buyer
+          image: lead-routing-engine
+          args: ["dist/mock-buyer.js"]
+          env: [{ name: PORT, value: "4000" }]
+          ports: [{ name: http, containerPort: 4000 }]
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { memory: 128Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mock-buyer
+spec:
+  selector: { app.kubernetes.io/name: mock-buyer }
+  ports: [{ port: 4000, targetPort: http }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mock-buyer-from-router
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: mock-buyer }
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { app.kubernetes.io/name: router }
+      ports: [{ port: 4000 }]

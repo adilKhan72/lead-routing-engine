@@ -1,0 +1,79 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: router
+  labels: { app.kubernetes.io/name: router }
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app.kubernetes.io/name: router }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: router }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9100"
+        prometheus.io/path: /metrics
+    spec:
+      initContainers:
+        - name: migrate
+          image: lead-routing-engine
+          args: ["dist/migrate.js"]
+          envFrom:
+            - secretRef: { name: lre-secrets }
+          securityContext: &restricted
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { memory: 128Mi }
+      containers:
+        - name: router
+          image: lead-routing-engine
+          args: ["dist/router.js"]
+          ports:
+            - { name: metrics, containerPort: 9100 }
+          envFrom:
+            - configMapRef: { name: lre-config }
+            - secretRef: { name: lre-secrets }
+          env:
+            # Each pod must be a distinct consumer-group member, or two pods would share pending entries.
+            - name: CONSUMER_NAME
+              valueFrom:
+                fieldRef: { fieldPath: metadata.name }
+          livenessProbe:
+            httpGet: { path: /healthz, port: metrics }
+            periodSeconds: 10
+            failureThreshold: 3
+          securityContext: *restricted
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { memory: 256Mi }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      # Longer than the routing budget so in-flight leads finish on SIGTERM; anything unfinished is reclaimed by
+      # another consumer once its lease expires (ADR-0003), so a hard kill is safe, just slower.
+      terminationGracePeriodSeconds: 30
+      volumes:
+        - { name: tmp, emptyDir: {} }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: router-metrics
+spec:
+  selector: { app.kubernetes.io/name: router }
+  ports:
+    - { name: metrics, port: 9100, targetPort: metrics }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: router
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: router }

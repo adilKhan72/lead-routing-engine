@@ -1,0 +1,19 @@
+# Routers scale on consumer-group backlog, not CPU: a router waiting on slow buyers is idle on CPU while the
+# stream grows. lre_stream_group_lag is exported by every router (identical values), hence max().
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: router
+spec:
+  scaleTargetRef:
+    name: router
+  minReplicaCount: 2
+  maxReplicaCount: 20
+  cooldownPeriod: 120
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus-server.monitoring.svc:80
+        query: max(lre_stream_group_lag)
+        threshold: "200"  # target backlog per replica
+        ignoreNullValues: "true"

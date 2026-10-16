@@ -1,0 +1,29 @@
+# Default-deny ingress for the app; only the ingest HTTP port and the metrics ports are reachable.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: lre-default-deny-ingress
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/part-of: lead-routing-engine }
+  policyTypes: ["Ingress"]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ingest-http
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: ingest }
+  ingress:
+    - ports: [{ port: 3000 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: router-metrics
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: router }
+  ingress:
+    - ports: [{ port: 9100 }]

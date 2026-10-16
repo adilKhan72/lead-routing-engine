@@ -105,8 +105,28 @@ Design decisions and their trade-offs are in [`docs/adr/`](docs/adr):
 | M1 | npm-workspaces monorepo (TS strict, ESLint, Vitest), ingest service with validation and idempotency, Postgres migrations, docker-compose, CI with integration tests against Postgres and Redis | Done |
 | M2 | Router worker: eligibility filters, atomic caps, tier + weighted selection, consumer group with ack / retry / DLQ, idempotent processing, concurrency tests | Done (buyer calls are simulated: every buyer accepts until M3) |
 | M3 | Ping-post over HTTP with timeouts and fallback (mock buyer server), Prometheus metrics, k6 load test | Done (load test run on a laptop only, see below) |
-| M4 | Kubernetes manifests (kustomize), HPA on stream lag, load test on a multi-node setup | Planned |
+| M4 | Kubernetes: kustomize base + demo/production overlays, KEDA autoscaling on stream lag, schema validation and a kind smoke test in CI | Done (multi-node load test not run) |
 | M5 | Reconciliation: cap counters vs sales ledger, and re-publishing leads stuck in `received` / `routing` with no stream entry (Redis data loss, stream trimming); buyer admin API; OpenTelemetry tracing | Planned |
+
+## Kubernetes
+
+`deploy/k8s/` holds a kustomize **base**, two **overlays** and a **KEDA component**:
+
+| | |
+|---|---|
+| `base/` | ingest + router Deployments, migrations as an **init container** (safe concurrently: the runner holds a Postgres advisory lock), probes on `/healthz` / `/readyz`, `preStop` delay + SIGTERM draining, non-root read-only containers, PodDisruptionBudgets, default-deny NetworkPolicies, CPU HPA for ingest |
+| `components/keda/` | routers autoscale on **consumer-group backlog** (`max(lre_stream_group_lag)`, 200 entries per replica, 2–20 replicas), not CPU: a router waiting on slow buyers is idle on CPU while the stream grows |
+| `overlays/demo/` | self-contained: in-cluster Postgres, Redis and mock buyers, with generated demo secrets |
+| `overlays/production/` | managed Postgres/Redis, `lre-secrets` from an external secret store, a pinned image tag, KEDA |
+
+Router pods get `CONSUMER_NAME` from their pod name (downward API), so every replica is a distinct consumer-group
+member. CI validates both overlays with `kubeconform` (including the KEDA CRD schema) and runs **`scripts/k8s-smoke.sh` on a
+kind cluster**: build the image, deploy the demo overlay, seed buyers, POST a lead through the ingest Service, and
+require it to be **sold**.
+
+```bash
+kubectl apply -k deploy/k8s/overlays/demo && scripts/k8s-smoke.sh   # any local cluster (kind, k3d, minikube)
+```
 
 ## Running locally
 
