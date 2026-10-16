@@ -1,0 +1,36 @@
+# Repairs drift the hot path can't (ADR-0006): re-publishes stuck leads, releases leaked cap slots.
+# Safe to run concurrently (SKIP LOCKED + row locks) but there's no reason to: Forbid.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: reconciler
+spec:
+  schedule: "* * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 50
+      template:
+        metadata:
+          labels: { app.kubernetes.io/name: reconciler }
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: reconciler
+              image: lead-routing-engine
+              args: ["dist/reconcile.js"]
+              envFrom:
+                - configMapRef: { name: lre-config }
+                - secretRef: { name: lre-secrets }
+              securityContext:
+                runAsNonRoot: true
+                runAsUser: 1000
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: { drop: ["ALL"] }
+              resources:
+                requests: { cpu: 50m, memory: 64Mi }
+                limits: { memory: 128Mi }

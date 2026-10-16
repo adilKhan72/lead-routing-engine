@@ -24,12 +24,21 @@ lead=$(curl -sf -X POST http://127.0.0.1:8080/v1/leads -H 'content-type: applica
 id=$(echo "$lead" | sed -E 's/.*"leadId":"([^"]+)".*/\1/')
 echo "accepted lead $id"
 
+sold=false
 for _ in $(seq 1 60); do
   status=$(curl -sf "http://127.0.0.1:8080/v1/leads/$id" | sed -E 's/.*"status":"([a-z]+)".*/\1/')
   case "$status" in
-    sold) echo "lead $id sold"; exit 0 ;;
+    sold) echo "lead $id sold"; sold=true; break ;;
     unsold|failed) echo "lead $id ended as $status"; exit 1 ;;
   esac
   sleep 2
 done
-echo "lead $id still '$status' after 120s"; kubectl -n "$NS" logs deployment/router --tail=50; exit 1
+if [ "$sold" != true ]; then
+  echo "lead $id still '$status' after 120s"; kubectl -n "$NS" logs deployment/router --tail=50; exit 1
+fi
+
+# Run the reconciler CronJob once, on demand, and require a clean run.
+kubectl -n "$NS" create job reconcile-smoke --from=cronjob/reconciler
+kubectl -n "$NS" wait --for=condition=complete job/reconcile-smoke --timeout=120s
+kubectl -n "$NS" logs job/reconcile-smoke | tail -3
+echo "reconciler ran cleanly"

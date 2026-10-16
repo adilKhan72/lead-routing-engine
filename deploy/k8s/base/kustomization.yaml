@@ -10,6 +10,7 @@ resources:
   - configmap.yaml
   - ingest.yaml
   - router.yaml
+  - reconciler.yaml
   - networkpolicy.yaml
 images:
   - name: lead-routing-engine
