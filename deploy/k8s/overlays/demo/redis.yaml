@@ -12,7 +12,7 @@ spec:
     spec:
       containers:
         - name: redis
-          image: redis:7-alpine
+          image: redis:8-alpine
           args: ["redis-server", "--appendonly", "yes"]
           ports: [{ name: redis, containerPort: 6379 }]
           readinessProbe:
