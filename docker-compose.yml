@@ -20,7 +20,7 @@ services:
       interval: 2s
       timeout: 3s
       retries: 30
-    volumes: [pgdata:/var/lib/postgresql/data]
+    volumes: [pgdata:/var/lib/postgresql]
 
   redis:
     image: redis:7-alpine

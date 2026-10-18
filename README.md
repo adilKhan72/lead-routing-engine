@@ -179,7 +179,7 @@ DATABASE_URL=postgres://lre:lre@localhost:5432/lre REDIS_URL=redis://localhost:6
 ```
 
 Unit tests use in-memory fakes behind the same interfaces as the Postgres and Redis adapters, with the
-clock and random source injected. Integration tests run the real adapters (CI uses Postgres 17 and
+clock and random source injected. Integration tests run the real adapters (CI uses Postgres 18 and
 Redis 7 service containers). The ones that matter most:
 
 - **No double-selling, caps exact:** 40 leads, every stream message published three times, four
@@ -216,7 +216,7 @@ the invariants: no lead with two decisions, no cap exceeded, cap counters equal 
 
 **Setup, so the numbers can be judged:** one laptop (Intel i7-1165G7, 4 cores / 8 threads, 16 GB RAM,
 about 1.5 GB of it free), with other workloads running. 1 ingest process, 2 router processes
-(concurrency 32 each), 1 mock-buyer process, all on the host; Postgres 17 and Redis 7 in Docker
+(concurrency 32 each), 1 mock-buyer process, all on the host; Postgres 18 and Redis 7 in Docker
 Desktop containers (256 MB / 64 MB memory limits), so every database and Redis call crosses the
 Docker Desktop VM boundary; k6 v2.3.0 in a container reaching the API through `host.docker.internal`.
 `LOG_LEVEL=warn`. Demo buyers from [`db/seed/demo-buyers.sql`](db/seed/demo-buyers.sql). This is a

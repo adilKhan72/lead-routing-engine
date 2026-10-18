@@ -30,12 +30,12 @@ jobs:
       - run: npm run build
 
   integration:
-    name: Integration tests (Postgres 17 + Redis 7)
+    name: Integration tests (Postgres 18 + Redis 7)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     services:
       postgres:
-        image: postgres:17-alpine
+        image: postgres:18-alpine
         env:
           POSTGRES_USER: lre
           POSTGRES_PASSWORD: lre
