@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # One image for every service; the entrypoint picks the bundle (dist/<service>.js).
-FROM node:22-alpine AS build
+FROM node:26-alpine AS build
 WORKDIR /src
 COPY package.json package-lock.json ./
 COPY packages/shared/package.json packages/shared/
@@ -14,7 +14,7 @@ COPY packages packages
 COPY services services
 RUN npm run build
 
-FROM node:22-alpine
+FROM node:26-alpine
 ENV NODE_ENV=production
 WORKDIR /app
 COPY --from=build /src/dist dist
