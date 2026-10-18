@@ -23,7 +23,7 @@ services:
     volumes: [pgdata:/var/lib/postgresql/data]
 
   redis:
-    image: redis:7-alpine
+    image: redis:8-alpine
     # AOF so stream entries survive a restart; Postgres remains the source of truth (ADR-0001).
     command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
     ports: ["127.0.0.1:6379:6379"]
