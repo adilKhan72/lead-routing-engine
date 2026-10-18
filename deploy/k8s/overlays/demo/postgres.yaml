@@ -13,7 +13,7 @@ spec:
     spec:
       containers:
         - name: postgres
-          image: postgres:17-alpine
+          image: postgres:18-alpine
           args: ["-c", "shared_buffers=64MB", "-c", "max_connections=100"]
           env:
             - { name: POSTGRES_USER, value: lre }
@@ -26,7 +26,7 @@ spec:
           resources:
             requests: { cpu: 100m, memory: 128Mi }
             limits: { memory: 384Mi }
-          volumeMounts: [{ name: data, mountPath: /var/lib/postgresql/data }]
+          volumeMounts: [{ name: data, mountPath: /var/lib/postgresql }]
   volumeClaimTemplates:
     - metadata: { name: data }
       spec:
